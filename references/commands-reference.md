@@ -173,11 +173,14 @@ unity projects create MyGame --vcs github --git-token-stdin
 
 ## command / list / status / pipeline (live Editor control)
 
-These talk to a **currently running** Unity Editor over the Pipeline package's local HTTP server — not batch mode.
+These talk to a **currently running** Unity Editor over the Pipeline package's local HTTP server — not batch mode. **Read the "read this before using it" callout in SKILL.md first** — this command surface commonly includes arbitrary-code-execution (an `eval`-style command), not just narrow, safe accessors.
 
 - `unity status [--port <n>] [--project <substring>]` — live table of every connected Editor: port, state, project, version, PID. Empty output = nothing running (or Pipeline not installed in the open project).
-- `unity list [--project-path <path>] [--runtime <name>] [--runtime-path <path>]` — lists commands/tools the connected Editor's Pipeline package registers. Run this before calling `command` on anything you haven't confirmed exists.
+- `unity list [--project-path <path>] [--runtime <name>] [--runtime-path <path>]` — lists commands/tools the connected Editor's Pipeline package registers. Run this before calling `command` on anything you haven't confirmed exists — depending on the package version, this list can run to 100+ entries, so skim by name for what's relevant rather than reading every one, but don't skip it and guess a command name from memory.
 - `unity command <name> [args...]` (alias `cmd`) — invokes a registered command on the Editor. Bare `unity command` (no name) also lists available commands. `--project-path` auto-detects if omitted; `--runtime`/`--runtime-path` target a Player build instead of the Editor; `--timeout <seconds>` (default 30).
+  - **Arguments are positional**, e.g. `unity command eval "return 1+1;" --project-path <path>` — not `key=value` pairs. Passing `key=value` gets forwarded as a literal string argument to the command instead of being parsed as a named parameter, and will fail or produce a confusing error. If a command's parameter order isn't obvious from its name, look for it in `unity list`'s output before guessing.
+  - **Response shape**: with `--format json`, the actual return value is nested at `data.result.result`. Its type is command-specific — sometimes a plain string, sometimes a JSON object — so parse it defensively (check the type at runtime) rather than assuming one shape applies to every command.
+  - **Mutating commands are often not undoable.** Some integrate with Unity's Undo system (Ctrl+Z works); many explicitly don't, and anything code-execution-based (`eval`) bypasses Undo entirely. Confirm with the user before running a command that creates/modifies/deletes assets, prefabs, scenes, project files, or runs arbitrary code — see Safety in SKILL.md.
 - `unity pipeline` (alias `pipe`) manages the Pipeline package itself:
   - `install [--project-path <path>] [--force] [--package-version <version>]` — install the package into a project (one-time setup, required before `list`/`command`/`mcp` will work for that project)
   - `upgrade [--project-path <path>]`
