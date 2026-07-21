@@ -10,14 +10,20 @@ With this skill installed, Claude can:
 - Run EditMode/PlayMode tests and summarize the resulting NUnit report
 - Run arbitrary batch-mode Editor commands via `unity run`
 - Install Unity editors and modules (with dry-run/confirmation guardrails before large downloads)
-- Talk to an **already-running** Unity Editor live, through the Unity Pipeline package (`unity list` / `unity command` / `unity status`) or via MCP (`unity mcp configure`)
+- Talk to an **already-running** Unity Editor live, through the Unity Pipeline package (`unity list` / `unity command` / `unity status`) or via MCP (`unity mcp configure`) — note that this live surface commonly includes arbitrary-code-execution (an `eval`-style command), not just narrow scene/GameObject accessors. SKILL.md has the details on scope, argument conventions, and when to confirm with the user before running a mutating command.
 
 ## Install
 
-Copy this repository into your Claude skills directory (or `git clone` it there directly):
+Copy this repository into your Claude skills directory (or `git clone` it there directly).
 
+**macOS/Linux (bash/zsh):**
 ```
 git clone https://github.com/digital8150/UnityCLI-Skill.git ~/.claude/skills/unity-cli
+```
+
+**Windows (PowerShell or cmd):** `~` is not expanded by `git.exe` outside of a POSIX shell — passing it literally creates a folder named `~` instead of resolving to your home directory. Use the full path instead:
+```
+git clone https://github.com/digital8150/UnityCLI-Skill.git "$env:USERPROFILE\.claude\skills\unity-cli"
 ```
 
 Requires the [`unity` CLI](https://unity.com/blog/meet-the-unity-cli) to already be installed and on `PATH`.
