@@ -89,18 +89,34 @@ unity install 6000.0.30f1 -m android --accept-eula --dry-run  # ALWAYS dry-run f
 
 This is the most powerful thing this CLI does, and the command shape (`unity command <name> [args]`) undersells it. Depending on the Pipeline package version installed in the project, `unity list` can return dozens to 100+ commands — not just a handful of narrow, safe accessors. Commonly among them is a command (often named `eval`) that executes **arbitrary C# inside the running Editor process**. That means live mode can do essentially anything the Editor GUI can do: create, modify, or delete GameObjects, prefabs, assets, scenes, and project files, or run arbitrary logic — it is not limited to whatever a command's name suggests. Treat any `unity command` call, and `eval`-style ones especially, with the same weight as running arbitrary code on the user's machine, because that's what it is.
 
-Setup (once per project):
+### The most common live task: did my script change actually compile?
+
+If you edit a `.cs` file in a project with a live-connected Editor, editing the file isn't the finish line — Unity needs to recompile, and telling the user "please check the Unity console" is a cop-out when you can just ask the Editor yourself:
+```
+unity command recompile --project-path <path>
+unity command recompile_status --project-path <path>   # poll until it reports done
+unity command console --project-path <path>             # read for compiler errors/warnings
+```
+(exact names depend on what the connected project's Pipeline package registers — confirm via `unity list` — but a recompile-trigger, a recompile-status poll, and a console-read are the common shape.) Make this your default close-out step any time you touch a script in a project with a live Editor attached — it turns "I made the change" into "I made the change and confirmed it compiles," which is the actual thing the user wants.
+
+### Setup
+
 ```
 unity pipeline install --project-path <path>
 ```
+One-time per project, but not a no-op: it modifies the project's package manifest and triggers a domain reload (the Editor will briefly lock up and recompile), same as installing any other package through the Package Manager UI. Fine to run without asking every time the user wants live control, but don't run it silently mid-task if the Editor is doing something else at that moment — a reload will interrupt it.
 
-Discover before you act — every time, don't rely on memory of a previous session, since the command set is defined by whatever Pipeline package version that project has, not by anything fixed in the CLI:
+### Discover before you act
+
+Don't rely on memory of a previous session — the command set is defined by whatever Pipeline package version that project has, not by anything fixed in the CLI:
 ```
 unity status                                      # confirm an Editor is live, and on which port/project
-unity list --project-path <path>                  # full command list this Editor exposes — skim by name for what's relevant, don't assume you already know it
+unity list --project-path <path> --format json    # full command list this Editor exposes
 ```
+This list can run to 100+ entries — don't let the whole human-readable table eat your context on every call. Use `--format json` and filter for the keyword you actually need (grep/jq for "prefab", "asset", "eval", "recompile", etc.) instead of reading the entire output, and once you've confirmed a command's name and signature within a session, you don't need to re-list before every subsequent call to it.
 
-Invoke a command:
+### Invoke a command
+
 ```
 unity command <name> <arg1> <arg2>... --project-path <path>
 ```
@@ -108,13 +124,29 @@ Arguments are **positional**, not `key=value` flags — passing `key=value` gets
 
 Reading the response: with `--format json`, the value you actually want is nested at `data.result.result`. Its type varies per command — sometimes a plain string, sometimes an object — so parse defensively (check the type before assuming structure) instead of assuming one shape works for every command.
 
-**Before running anything that creates, modifies, or deletes project state** — assets, prefabs, scenes, project settings, files on disk, or arbitrary code via `eval` — confirm with the user first, the same way you would before running a destructive shell command; see Safety below. Some Pipeline commands integrate with Unity's Undo system and are reversible with Ctrl+Z, but many explicitly aren't, and `eval` bypasses Undo entirely since it's raw code execution. Don't assume a mutation is reversible unless the command's own description in `unity list` says so.
+### Tips specifically for `eval`
+
+- **Batch, don't loop.** One `eval` call that sets up several objects/fields beats a call per field — each round-trip has fixed overhead, and reaching for a narrow per-field setter 15 times when one script block does it in one shot is slower for no benefit.
+- **Use fully-qualified type names** inside the eval'd code (`UnityEditor.AssetDatabase`, `UnityEngine.GameObject`, ...) rather than assuming a `using` is in scope — the snippet doesn't inherit the project's normal usings, and unqualified names are a common source of failures.
+- **Call `UnityEditor.AssetDatabase.SaveAssets()` and `.Refresh()` at the end** of any eval that touches assets/prefabs. Without them, changes can look like they succeeded in-memory but won't actually persist to disk.
+- **For anything longer than a couple lines, write the code to a file and use `eval_file`** (or whatever the equivalent is named — check `unity list`) instead of inlining C# as a shell argument. Multi-line code as an inline argument runs into shell-quoting problems fast, especially on Windows — see below.
+
+### Scope of approval: once per task, not once per call
+
+Get the user's go-ahead for the *scope* of what you're about to do, then work within it without re-confirming every individual call — a task like "wire up these 4 prefabs" is inherently a request for however many mutating calls that takes, and stopping to ask before each one turns a 15-step task into 15 approval prompts and doesn't actually make anything safer. What does warrant stopping to re-confirm:
+- You're about to touch something **outside what was discussed** (a file/object/asset the user didn't mention).
+- You're about to do something **irreversible beyond the task itself** — overwriting or deleting an asset that predates this task, as opposed to something you just created a moment ago as part of it.
+- You're about to run `eval` for something structurally different from what was agreed (e.g. the task was "wire up prefabs" and you're now about to touch project settings).
+
+In short: confirm the plan once, then execute it — reserve fresh confirmation for scope creep or genuinely irreversible edges, not for every command in an already-agreed-on task. Read-only commands (querying state, listing tools) never need confirmation.
 
 For a persistent AI-agent connection instead of one-off CLI calls, `unity mcp configure <client>` writes an MCP server entry so the client (Claude Desktop, Claude Code, etc.) talks to the Editor directly over MCP. Run `unity mcp configure --list` to see supported clients, and `unity mcp` alone starts the stdio server manually if the user wants to wire it up to something not in that list. The same arbitrary-execution caution applies over MCP as over the CLI — the underlying command surface is the same.
 
 ## Windows/PowerShell quoting
 
 The user is on Windows. Project paths and names with spaces (`"My Game"`) need double quotes, and PowerShell needs `--` handled carefully when passing raw Editor args through (`unity run . -- -nographics -quit`) — test that the `--` separator actually reaches the CLI rather than being swallowed, since PowerShell's argument parsing differs from bash here. If a command with `--` misbehaves, try wrapping the whole trailing args in a single quoted string via `--args` instead, where the command supports it (e.g. `unity build --args "-nographics -quit"`).
+
+This applies doubly to multi-line C# passed to `eval`-style Pipeline commands (see above) — don't try to inline a multi-line script as a quoted shell argument on Windows, it's a quoting minefield. Write it to a temp file and use `eval_file` (or the project's equivalent) instead.
 
 ## Safety: what to confirm before running
 
@@ -125,6 +157,7 @@ Some `unity` operations are expensive or destructive — confirm with the user b
 - **`unity uninstall`, `unity self-uninstall`, `unity projects remove`** — removes editors/CLI/registry entries. `projects remove` doesn't delete files from disk, but `uninstall` does remove an installed editor.
 - **`--allow-dirty-build`** — bypasses the uncommitted-changes guard; only use if the user explicitly asks to build dirty.
 - **`unity projects create --vcs github/gitlab`** — creates and pushes to a *new remote repository* under the user's account. Confirm the target namespace/visibility before running, same as any other action that creates shared/remote state.
-- **`unity command <name>` against a live Editor (Pipeline)** — this is the one most likely to be underestimated. Any command that creates, modifies, or deletes GameObjects, prefabs, assets, scenes, or project files is changing the user's actual project, often without Undo support, and `eval`-style commands run arbitrary code with no guardrails at all. Confirm scope with the user before running mutating Pipeline commands, the same way you'd confirm before `rm` or overwriting a file — read-only commands (querying state, listing tools) don't need this, but anything that writes does.
+- **`unity command <name>` against a live Editor (Pipeline)** — this is the one most likely to be underestimated. Any command that creates, modifies, or deletes GameObjects, prefabs, assets, scenes, or project files is changing the user's actual project, often without Undo support, and `eval`-style commands run arbitrary code with no guardrails at all. This doesn't mean confirming before every individual call — see "Scope of approval" in the Pipeline workflow section above for how to get task-level sign-off once and then execute without nagging, reserving re-confirmation for scope creep or genuinely irreversible edges (overwriting/deleting something that predates the task).
+- **`unity pipeline install`** — modifies the project's package manifest and triggers a domain reload, interrupting whatever the Editor was doing at that moment. Low-stakes compared to the rest of this list, but not a true no-op either — avoid running it mid-task if the user is actively working in the Editor.
 
 Full reference for every other command (`auth`, `cloud`, `hub`, `templates`, `config`, `modules`, `cache`, `analytics`, `logs`, `license`, `releases`, `changelog`, `env`, `diagnose`, `completion`, `shell`) is in [references/commands-reference.md](references/commands-reference.md).
